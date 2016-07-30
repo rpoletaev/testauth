@@ -1,0 +1,2 @@
+port: :3030
+connection_string: user=postgres password=pass dbname=postgres sslmode=disable

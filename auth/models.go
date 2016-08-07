@@ -2,10 +2,14 @@ package auth
 
 import (
 	"fmt"
+
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/postgres"
 	// "github.com/pborman/uuid"
+	"strings"
+
 	"golang.org/x/crypto/bcrypt"
+	// "container/list"
 )
 
 // type Cpt struct {
@@ -40,12 +44,6 @@ type Dictionary struct {
 	DeleteCptID uint
 }
 
-type Account struct {
-	gorm.Model
-	Email    string
-	Password string
-}
-
 func CreateAccount(db *gorm.DB, email, password string) (*Account, error) {
 	account := &Account{}
 	if !db.Where(&Account{Email: email}).First(account).RecordNotFound() {
@@ -66,28 +64,89 @@ func CreateAccount(db *gorm.DB, email, password string) (*Account, error) {
 	return account, nil
 }
 
-func IsValidAccount(db *gorm.DB, email, password string) (bool, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return false, err
-	}
-
+func GetValidAccount(db *gorm.DB, email, password string) (*Account, error) {
 	account := &Account{}
 	if db.Where(&Account{Email: email}).First(account).RecordNotFound() {
-		return false, nil
+		return nil, fmt.Errorf("Record not found")
 	}
 
-	return account.Password == string(hash), nil
+	if err := bcrypt.CompareHashAndPassword([]byte(account.Password), []byte(password)); err != nil {
+		return nil, err
+	}
+
+	return account, nil
 }
 
-type User struct {
+type Account struct {
 	gorm.Model
-	Login       string
-	Account     Account `gorm:"ForeignKey:AccountID"`
-	AccountID   int
-	Checkpoints []Checkpoint `gorm:"many2many:user_checkpoints;"`
-	Predicates  []Predicate  `gorm:"many2many:role_predicates"`
-	Roles       []Role       `gorm:"many2many:user_roles"`
+	Email       string
+	Password    string
+	Checkpoints []Checkpoint `gorm:"many2many:account_checkpoints"`
+	Predicates  []Predicate  `gorm:"many2many:account_predicates"`
+	Roles       []Role       `gorm:"many2many:account_roles"`
+}
+
+func (acc *Account) HasActionAccess(db *gorm.DB, dict Dictionary, action string) (result bool) {
+	switch strings.ToUpper(action) {
+	default:
+		result = false
+	case "GET":
+		result = acc.IsCheckpointAllowed(db, dict.ReadCptID)
+	case "PUT":
+		result = acc.IsCheckpointAllowed(db, dict.UpdateCptID)
+	case "POST":
+		result = acc.IsCheckpointAllowed(db, dict.CreateCptID)
+	case "DELETE":
+		result = acc.IsCheckpointAllowed(db, dict.DeleteCptID)
+	}
+
+	return
+}
+
+func (acc *Account) IsCheckpointAllowed(db *gorm.DB, cpt uint) bool {
+	checkpoints := []Checkpoint{}
+	db.Model(acc).Association("Checkpoints").Find(&checkpoints)
+
+	for _, cp := range checkpoints {
+		if cp.ID == cpt {
+			return true
+		}
+	}
+
+	accRoles := []Role{}
+	db.Model(acc).Association("Roles").Find(&accRoles)
+
+	for _, role := range accRoles {
+		if role.IsCheckpointAllowed(db, cpt) {
+			return true
+		}
+	}
+	return false
+}
+func (acc *Account) GetPredicatesForDictActions(db *gorm.DB, dict Dictionary, action string) []Predicate {
+	accountPredicates := []Predicate{}
+	predicates := &[]Predicate{}
+
+	db.Model(acc).Related(predicates, "Predicates")
+	if len(*predicates) > 0 {
+		db.Where("dictionry_id = ? and id in (?)", dict.ID, *predicates).Find(&accountPredicates)
+	}
+
+	roles := []Role{}
+	db.Model(acc).Related(&roles, "Roles")
+	for _, role := range roles {
+		db.Model(&role).Related(predicates, "Predicates")
+		if len(*predicates) > 0 {
+			accountPredicates = append(accountPredicates, *predicates...)
+		}
+	}
+
+	if len(accountPredicates) == 0 {
+		return accountPredicates
+	}
+
+	db.Model(&accountPredicates)
+
 }
 
 type Role struct {
@@ -99,21 +158,42 @@ type Role struct {
 	Predicates   []Predicate  `gorm:"many2many:role_predicates"`
 }
 
+func (r *Role) IsCheckpointAllowed(db *gorm.DB, cptId uint) bool {
+	cpoints := []Checkpoint{}
+	db.Model(r).Association("Checkpoints").Find(&cpoints)
+
+	for _, cp := range cpoints {
+		if cp.ID == cptId {
+			return true
+		}
+	}
+	return false
+}
+
 type Checkpoint struct {
 	gorm.Model
 	Name string
 }
 
-type Predicate struct {
-	gorm.Model
-	Name      string
-	ModelPath string //model_name from router path
-	Query     string
+func (cpt *Checkpoint) AfterCreate(tx *gorm.DB) (err error) {
+	admin := &Role{}
+	tx.First(admin, 1)
+	tx.Model(admin).Association("Checkpoints").Append(*cpt)
+	tx.Save(admin)
+	return
 }
 
-type UserPredicateAction struct {
+type Predicate struct {
 	gorm.Model
-	UserID      uint `gorm:"primary_key:true"`
+	Name         string
+	Query        string
+	Dictionary   Dictionary
+	DictionaryID uint
+}
+
+type AccountPredicateAction struct {
+	gorm.Model
+	AccountID   uint `gorm:"primary_key:true"`
 	PredicateID uint `gorm:"primary_key:true"`
 	Create      bool `sql:"DEFAULT:false"`
 	Read        bool `sql:"DEFAULT:false"`
@@ -135,7 +215,8 @@ func DropTable(db *gorm.DB, model interface{}) {
 	db.DropTableIfExists(model)
 }
 
-func CreateTable(db *gorm.DB, model interface{}) {
+//Create tables for model and assign CRUD checkpoints
+func CreateDictionary(db *gorm.DB, model interface{}) {
 	s := db.CreateTable(model)
 	tblName := s.NewScope(model).TableName()
 
@@ -161,8 +242,17 @@ func CreateTable(db *gorm.DB, model interface{}) {
 	db.Create(d)
 }
 
-// func CreateTables(db *gorm.DB, models []*interface{}) {
-// for _, model := range models {
-// db.CreateTable(model)
-// }
-// }
+func getActionCondition(action string) string {
+	switch strings.ToUpper(action) {
+	case "GET":
+		return "read = true"
+	case "PUT":
+		return "update = true"
+	case "POST":
+		return "create = true"
+	case "DELETE":
+		return "delete = true"
+	}
+
+	return ""
+}

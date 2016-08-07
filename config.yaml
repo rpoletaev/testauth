@@ -1,2 +1,7 @@
 port: :3030
 connection_string: user=postgres password=pass dbname=postgres sslmode=disable
+
+jwt:
+  secret: jwt_secret
+  exp_hours: 72
+  excluded_path: [/, /login]

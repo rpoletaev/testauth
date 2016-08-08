@@ -46,8 +46,14 @@ func CheckRightAccess(db *gorm.DB) echo.MiddlewareFunc {
 
 			fmt.Printf("User [%d] has access to dictionary [%s]\n", accountID, dict.Name)
 
-			//Get Pridicates for account and roles and get allowed keys
-			//GetAllowedKeys(acc, dict, method)
+			predicates := acc.GetPredicatesForDictActions(db, dict, method)
+			allowedList := []uint{}
+			for _, predicate := range predicates {
+				allowedList = append(allowedList, predicate.AllowedList(db, accountID)...)
+			}
+
+			fmt.Println("Allowed list containts ", allowedList)
+
 			return next(c)
 		}
 	}

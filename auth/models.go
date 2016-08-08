@@ -44,6 +44,15 @@ type Dictionary struct {
 	DeleteCptID uint
 }
 
+type Account struct {
+	gorm.Model
+	Email       string
+	Password    string
+	Checkpoints []Checkpoint `gorm:"many2many:account_checkpoints"`
+	Predicates  []Predicate  `gorm:"many2many:account_predicates"`
+	Roles       []Role       `gorm:"many2many:account_roles"`
+}
+
 func CreateAccount(db *gorm.DB, email, password string) (*Account, error) {
 	account := &Account{}
 	if !db.Where(&Account{Email: email}).First(account).RecordNotFound() {
@@ -75,15 +84,6 @@ func GetValidAccount(db *gorm.DB, email, password string) (*Account, error) {
 	}
 
 	return account, nil
-}
-
-type Account struct {
-	gorm.Model
-	Email       string
-	Password    string
-	Checkpoints []Checkpoint `gorm:"many2many:account_checkpoints"`
-	Predicates  []Predicate  `gorm:"many2many:account_predicates"`
-	Roles       []Role       `gorm:"many2many:account_roles"`
 }
 
 func (acc *Account) HasActionAccess(db *gorm.DB, dict Dictionary, action string) (result bool) {
@@ -123,30 +123,35 @@ func (acc *Account) IsCheckpointAllowed(db *gorm.DB, cpt uint) bool {
 	}
 	return false
 }
+
 func (acc *Account) GetPredicatesForDictActions(db *gorm.DB, dict Dictionary, action string) []Predicate {
+	actionCondition := getActionCondition(action)
+	if actionCondition != "" {
+		actionCondition = " and " + actionCondition
+	}
+
 	accountPredicates := []Predicate{}
-	predicates := &[]Predicate{}
+	predicates := []Predicate{}
+	var predicateIds []uint
+	db.Model(&AccountPredicateAction{}).Where("account_id = ? "+actionCondition, acc.ID).Pluck("predicate_id", &predicateIds)
 
-	db.Model(acc).Related(predicates, "Predicates")
-	if len(*predicates) > 0 {
-		db.Where("dictionry_id = ? and id in (?)", dict.ID, *predicates).Find(&accountPredicates)
+	if len(predicateIds) > 0 {
+		db.Model(acc).Related(&predicates, "Predicates").Find(&accountPredicates, "dictionary_id = ? and id in (?)", dict.ID, predicateIds)
 	}
 
+	rolePredicates := []Predicate{}
 	roles := []Role{}
-	db.Model(acc).Related(&roles, "Roles")
-	for _, role := range roles {
-		db.Model(&role).Related(predicates, "Predicates")
-		if len(*predicates) > 0 {
-			accountPredicates = append(accountPredicates, *predicates...)
-		}
+	roleIds := []uint{}
+	db.Model(acc).Related(&roles, "Roles").Pluck("id", roleIds)
+	db.Model(&RolePredicateAction{}).Where("role_id in (?) "+actionCondition, roleIds).Pluck("predicate_id", &predicateIds)
+	if len(predicateIds) > 0 {
+		db.Model(&Role{}).Related(&predicates, "Predicates").Find(rolePredicates, "id in (?) and dictionary_id = ?", predicateIds, dict.ID)
 	}
 
-	if len(accountPredicates) == 0 {
-		return accountPredicates
-	}
+	fmt.Println("Account with role predicates has ", len(rolePredicates), " items")
 
-	db.Model(&accountPredicates)
-
+	predicates = append(accountPredicates, rolePredicates...)
+	return predicates
 }
 
 type Role struct {
@@ -183,12 +188,21 @@ func (cpt *Checkpoint) AfterCreate(tx *gorm.DB) (err error) {
 	return
 }
 
+//Predicate contains display name like "Only User Roles"
+//Query - Raw Sql query with only one parameter account_id. Query must select only one field "id"
 type Predicate struct {
 	gorm.Model
 	Name         string
 	Query        string
 	Dictionary   Dictionary
 	DictionaryID uint
+}
+
+//AllowedList returns only allowed id from predicate dictionary
+func (predicate *Predicate) AllowedList(db *gorm.DB, accId uint) []uint {
+	list := []uint{}
+	db.Raw(predicate.Query, accId).Pluck("id", &list)
+	return list
 }
 
 type AccountPredicateAction struct {

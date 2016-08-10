@@ -12,23 +12,6 @@ import (
 	// "container/list"
 )
 
-// type Cpt struct {
-// CreateCpt   Checkpoint `gorm:"ForeignKey:CreateCptID"`
-// CreateCptID uint
-// ReadCpt     Checkpoint `gorm:"ForeignKey:ReadCptID"`
-// ReadCptID   uint
-// UpdateCpt   Checkpoint `gorm:"ForeignKey:UpdateCptID"`
-// UpdateCptID uint
-// DeleteCpt   Checkpoint `gorm:"ForeignKey:DeleteCptID"`
-// DeleteCptID uint
-// }
-
-//Incapsulate gorm.Model and add CRUD checkpoints
-// type CptModel struct {
-// 	gorm.Model
-// 	Cpt
-// }
-
 type Dictionary struct {
 	gorm.Model
 	Name        string
@@ -55,8 +38,14 @@ type Account struct {
 
 func CreateAccount(db *gorm.DB, email, password string) (*Account, error) {
 	account := &Account{}
-	if !db.Where(&Account{Email: email}).First(account).RecordNotFound() {
-		return nil, fmt.Errorf("Account with email: %s exist")
+	withSameEmail := 0
+
+	// db.Find(&[]Account{}, &Account{Email: email}).Count(&withSameEmail)
+	db.Model(&Account{}).Where("email = ?", email).Count(&withSameEmail)
+	println(withSameEmail)
+
+	if withSameEmail > 0 {
+		return nil, fmt.Errorf("Account with email: %s exist", email)
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -70,6 +59,14 @@ func CreateAccount(db *gorm.DB, email, password string) (*Account, error) {
 		return nil, fmt.Errorf("Unable to create new account \r\n%v", err)
 	}
 
+	cnt := 0
+	db.Find(&[]Account{}).Count(&cnt)
+
+	if cnt == 1 {
+		admin := &Role{}
+		db.First(admin, 1)
+		db.Model(account).Association("Roles").Append(admin)
+	}
 	return account, nil
 }
 
@@ -142,7 +139,7 @@ func (acc *Account) GetPredicatesForDictActions(db *gorm.DB, dict Dictionary, ac
 	rolePredicates := []Predicate{}
 	roles := []Role{}
 	roleIds := []uint{}
-	db.Model(acc).Related(&roles, "Roles").Pluck("id", roleIds)
+	db.Model(acc).Related(&roles, "Roles").Pluck("id", &roleIds)
 	db.Model(&RolePredicateAction{}).Where("role_id in (?) "+actionCondition, roleIds).Pluck("predicate_id", &predicateIds)
 	if len(predicateIds) > 0 {
 		db.Model(&Role{}).Related(&predicates, "Predicates").Find(rolePredicates, "id in (?) and dictionary_id = ?", predicateIds, dict.ID)
@@ -230,9 +227,14 @@ func DropTable(db *gorm.DB, model interface{}) {
 }
 
 //Create tables for model and assign CRUD checkpoints
-func CreateDictionary(db *gorm.DB, model interface{}) {
-	s := db.CreateTable(model)
-	tblName := s.NewScope(model).TableName()
+func CreateDictionary(db *gorm.DB, model interface{}, caption string) {
+	var tblName string
+	if db.HasTable(model) {
+		tblName = db.Model(model).NewScope(model).TableName()
+	} else {
+		s := db.CreateTable(model)
+		tblName = s.NewScope(model).TableName()
+	}
 
 	c_cpt := Checkpoint{Name: fmt.Sprintf("Checkpoint for Create dictionary \"%s\" record", tblName)}
 	db.Create(&c_cpt)
@@ -245,7 +247,7 @@ func CreateDictionary(db *gorm.DB, model interface{}) {
 
 	d := &Dictionary{
 		Name:        tblName,
-		Caption:     tblName,
+		Caption:     caption,
 		TableName:   tblName,
 		CreateCptID: c_cpt.ID,
 		ReadCptID:   r_cpt.ID,

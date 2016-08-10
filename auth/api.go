@@ -1,9 +1,6 @@
 package auth
 
 import (
-	"fmt"
-	"sort"
-
 	"github.com/ipfans/echo-session"
 	"github.com/jinzhu/gorm"
 	"github.com/labstack/echo"
@@ -36,7 +33,7 @@ func (api *API) setRoutes() {
 }
 
 //NewAPI Create & configure API object
-func NewAPI(config Config) (*API, error) {
+func NewAPI(config Config, init bool) (*API, error) {
 	api := &API{
 		config: &config,
 		router: echo.New(),
@@ -44,8 +41,13 @@ func NewAPI(config Config) (*API, error) {
 
 	var err error
 	api.postgress, err = gorm.Open("postgres", config.PostgeressConString)
+
 	if err != nil {
 		panic(err)
+	}
+
+	if init {
+		api.initialization()
 	}
 
 	api.router.Use(middleware.Logger())
@@ -57,8 +59,13 @@ func NewAPI(config Config) (*API, error) {
 	jwtConfig.SigningKey = []byte(config.JWT.Secret)
 	jwtConfig.Skipper = func(c echo.Context) bool {
 		uri := c.Request().URI()
-		result := sort.SearchStrings(config.JWT.ExcludedPaths, uri) >= 0
-		return result
+		for _, resource := range config.JWT.ExcludedPaths {
+			if resource == uri {
+				println("resource is ", resource, "JWT WAS ESCAPED")
+				return true
+			}
+		}
+		return false
 	}
 
 	api.router.Use(middleware.JWTWithConfig(jwtConfig))
@@ -66,31 +73,22 @@ func NewAPI(config Config) (*API, error) {
 	store := session.NewCookieStore([]byte("secret"))
 	api.router.Use(session.Sessions("GSESSION", store))
 
-	if api.postgress == nil {
-		fmt.Println("POSTGRESS IS NILL")
-	}
 	api.router.Use(CheckRightAccess(api.postgress))
 	return api, nil
 }
 
-func (api *API) createTbles() {
-	api.postgress.DropTableIfExists(&Account{}, &Role{}, &Predicate{}, &AccountPredicateAction{}, &RolePredicateAction{})
-	//CreateTable(api.postgress, &Dictionary{})
-	CreateDictionary(api.postgress, &Account{})
-	CreateDictionary(api.postgress, &Role{})
-	CreateDictionary(api.postgress, &Predicate{})
-	CreateDictionary(api.postgress, &AccountPredicateAction{})
-	CreateDictionary(api.postgress, &RolePredicateAction{})
+func (api *API) initialization() {
+	api.postgress.DropTableIfExists(&Dictionary{}, &Checkpoint{}, &Account{}, &Role{}, &Predicate{}, &AccountPredicateAction{}, &RolePredicateAction{})
+	api.postgress.CreateTable(&Dictionary{}, &Checkpoint{}, &Role{})
+	api.postgress.Create(&Role{Name: "admin"})
+	CreateDictionary(api.postgress, &Dictionary{}, "Справочники")
+	CreateDictionary(api.postgress, &Checkpoint{}, "Контрольные точки")
+	CreateDictionary(api.postgress, &Role{}, "Роли")
+	CreateDictionary(api.postgress, &Account{}, "Аккаунты")
+	CreateDictionary(api.postgress, &AccountPredicateAction{}, "Связь акаунтов, предикатов и действий")
+	CreateDictionary(api.postgress, &RolePredicateAction{}, "Связь ролей, предикатов и действий")
 }
 
 func (api *API) Run(srv engine.Server) {
-	//api.CreateTbles()
-	// checkpoints := []Checkpoint{}
-	// api.postgress.Find(&checkpoints)
-
-	// admin := &Role{Name: "admin"}
-	// admin.Checkpoints = checkpoints
-
-	// api.postgress.Create(admin)
 	api.router.Run(srv)
 }

@@ -14,10 +14,8 @@ func (api *API) Signup(c echo.Context) error {
 	email := c.FormValue("email")
 	password := c.FormValue("password")
 	confirm := c.FormValue("confirm")
-
-	var usrCount = 0
-	if api.postgress.Find(&Account{Email: email}).Count(&usrCount); usrCount > 0 {
-		return echo.NewHTTPError(http.StatusUnauthorized, "User with same email already exists")
+	if email == "" || password == "" || confirm == "" {
+		return echo.NewHTTPError(http.StatusUnauthorized, "email, password and confirmation is required")
 	}
 
 	if password != confirm {
@@ -29,7 +27,7 @@ func (api *API) Signup(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusUnauthorized, err.Error())
 	}
 
-	return c.HTML(http.StatusOK, fmt.Sprintf("User %s signed in", acc.ID))
+	return c.HTML(http.StatusCreated, fmt.Sprintf("User %s signed in", acc.ID))
 }
 
 func (api *API) Login(c echo.Context) error {
@@ -41,21 +39,21 @@ func (api *API) Login(c echo.Context) error {
 		return echo.ErrUnauthorized
 	}
 
-	fmt.Println("User is logged in")
 	token := jwt.New(jwt.SigningMethodHS256)
 	claims := token.Claims.(jwt.MapClaims)
-	claims["expiration_date"] = time.Now().Add(time.Hour * time.Duration(api.config.JWT.ExpHours)).Unix()
+	claims["exp"] = time.Now().Add(time.Hour * time.Duration(api.config.JWT.ExpHours)).Unix()
 
-	session := session.Default(c)
-	session.Set("account_id", acc.ID)
-	session.Save()
-
-	t_string, err := token.SignedString([]byte(api.config.JWT.Secret))
+	t, err := token.SignedString([]byte(api.config.JWT.Secret))
 	if err != nil {
 		return err
 	}
 
-	return c.JSON(http.StatusOK, map[string]string{"token": t_string})
+	//Response().Header().Add(echo.HeaderAuthorization, "Bearer "+t)
+	session := session.Default(c)
+	session.Set("account_id", acc.ID)
+	session.Save()
+
+	return c.JSON(http.StatusOK, map[string]string{"token": t})
 }
 
 func StubHandler(c echo.Context) error {

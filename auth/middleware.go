@@ -13,10 +13,11 @@ import (
 func CheckRightAccess(db *gorm.DB) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			db.AutoMigrate(&Predicate{})
-			exludedResources := []string{"/", "/login", "/signup"}
+			exludedResources := []string{"/", "/login", "/signup", "/favicon.ico"}
 			for _, resource := range exludedResources {
+				// fmt.Println("uri is ", c.Request().URI(), " resource is ", resource)
 				if resource == c.Request().URI() {
+					// fmt.Println("email is", c.FormValue("email"))
 					return next(c)
 				}
 			}
@@ -40,11 +41,12 @@ func CheckRightAccess(db *gorm.DB) echo.MiddlewareFunc {
 			}
 
 			method := c.Request().Method()
+			action := getActionSynonim(method)
 			if !acc.HasActionAccess(db, dict, method) {
-				return fmt.Errorf("User [%d] hasn't checkpoint to Dictionary [%s]", accountID, dict.Name)
+				return fmt.Errorf("User [%d] hasn't checkpoint to %s [%s]", accountID, action, dict.Name)
 			}
 
-			fmt.Printf("User [%d] has access to dictionary [%s]\n", accountID, dict.Name)
+			fmt.Printf("User [%d] has access to %s [%s]\n", accountID, action, dict.Name)
 
 			predicates := acc.GetPredicatesForDictActions(db, dict, method)
 			allowedList := []uint{}
@@ -62,8 +64,23 @@ func CheckRightAccess(db *gorm.DB) echo.MiddlewareFunc {
 func GetDictionaryFromUri(db *gorm.DB, uri string) Dictionary {
 	splitURI := strings.Split(uri, "/")
 	name := splitURI[1]
-
+	println("Splited uri ", uri, " ", name)
 	dictionary := Dictionary{}
 	db.Where("name = ?", name).First(&dictionary)
 	return dictionary
+}
+
+func getActionSynonim(action string) string {
+	switch strings.ToUpper(action) {
+	case "GET":
+		return "read"
+	case "PUT":
+		return "update"
+	case "POST":
+		return "create"
+	case "DELETE":
+		return "delete"
+	}
+
+	return "uncnown action"
 }
